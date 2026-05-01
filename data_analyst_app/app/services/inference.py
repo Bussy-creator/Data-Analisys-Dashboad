@@ -241,63 +241,138 @@ class InferenceEngine:
     def _detect_relationships(self):
         """
         Examines pairs of columns together to find correlations
-        and statistical associations.
+        and statistical associations across all column type combinations.
+        
+        Handles:
+        - Numeric vs Numeric: Pearson correlation
+        - Numeric vs Categorical: ANOVA (F-test)
+        - Categorical vs Categorical: Chi-Square test
         """
         numeric_cols = [col for col, t in self.column_profiles.items()
                         if t == "numeric"]
+        categorical_cols = [col for col, t in self.column_profiles.items()
+                           if t == "categorical"]
 
-        # ── RULE: Pearson Correlation ─────────────────────────────────────────
-        # Pearson's r measures the LINEAR relationship between two 
-        # numeric variables. Range: -1 to +1.
-        #
-        # Interpretation (Cohen's convention):
-        #   |r| < 0.3  → Weak
-        #   0.3 ≤ |r| < 0.7 → Moderate  
-        #   |r| ≥ 0.7  → Strong
-        #
-        # We also compute the p-value to test if the correlation is
-        # statistically significant or just due to random chance.
-        # p < 0.05 means we're 95% confident the correlation is real.
-        #
-        # IMPORTANT: Correlation ≠ Causation. Always note this.
+        # ── Numeric vs Numeric: Pearson Correlation ───────────────────────────
+        for i in range(len(numeric_cols)):
+            for j in range(i + 1, len(numeric_cols)):
+                col_a = numeric_cols[i]
+                col_b = numeric_cols[j]
 
-        if len(numeric_cols) >= 2:
-            for i in range(len(numeric_cols)):
-                for j in range(i + 1, len(numeric_cols)):
-                    col_a = numeric_cols[i]
-                    col_b = numeric_cols[j]
+                # Drop rows where either column has NaN
+                pair = self.df[[col_a, col_b]].dropna()
 
-                    # Drop rows where either column has NaN
-                    pair = self.df[[col_a, col_b]].dropna()
+                if len(pair) < 5:
+                    continue  # Not enough data to correlate
 
-                    if len(pair) < 5:
-                        continue  # Not enough data to correlate
+                r, p_value = stats.pearsonr(pair[col_a], pair[col_b])
+                abs_r = abs(r)
 
-                    r, p_value = stats.pearsonr(pair[col_a], pair[col_b])
-                    abs_r = abs(r)
+                if abs_r < 0.3:
+                    strength = "weak"
+                elif abs_r < 0.7:
+                    strength = "moderate"
+                else:
+                    strength = "strong"
 
-                    if abs_r < 0.3:
-                        strength = "weak"
-                    elif abs_r < 0.7:
-                        strength = "moderate"
-                    else:
-                        strength = "strong"
+                direction = "positive" if r > 0 else "negative"
+                significant = p_value < 0.05
 
-                    direction = "positive" if r > 0 else "negative"
-                    significant = p_value < 0.05
+                # Only report if meaningful (moderate or stronger)
+                # and statistically significant
+                if abs_r >= 0.3 and significant:
+                    self.insights.append({
+                        "columns": [col_a, col_b],
+                        "type": "correlation",
+                        "finding": f"There is a {strength} {direction} correlation "
+                                   f"between '{col_a}' and '{col_b}' "
+                                   f"(r = {r:.2f}, p = {p_value:.4f}). "
+                                   f"This is statistically significant.",
+                        "values": {"r": r, "p_value": p_value}
+                    })
 
-                    # Only report if meaningful (moderate or stronger)
-                    # and statistically significant
-                    if abs_r >= 0.3 and significant:
-                        self.insights.append({
-                            "columns": [col_a, col_b],
-                            "type": "correlation",
-                            "finding": f"There is a {strength} {direction} correlation "
-                                       f"between '{col_a}' and '{col_b}' "
-                                       f"(r = {r:.2f}, p = {p_value:.4f}). "
-                                       f"This is statistically significant.",
-                            "values": {"r": r, "p_value": p_value}
-                        })
+        # ── Numeric vs Categorical: ANOVA (F-test) ───────────────────────────
+        # Tests if the means of a numeric variable differ significantly
+        # across categories of a categorical variable.
+        for num_col in numeric_cols:
+            for cat_col in categorical_cols:
+                # Drop rows where either column has NaN
+                pair = self.df[[num_col, cat_col]].dropna()
+
+                if len(pair) < 5:
+                    continue
+
+                # Group numeric values by category
+                groups = [group[num_col].values for name, group in pair.groupby(cat_col)]
+                
+                # Need at least 2 groups for ANOVA
+                if len(groups) < 2:
+                    continue
+
+                try:
+                    f_stat, p_value = stats.f_oneway(*groups)
+                except:
+                    continue  # Skip if ANOVA fails (e.g., insufficient variance)
+
+                significant = p_value < 0.05
+
+                if significant:
+                    # Calculate means per category for context
+                    category_means = pair.groupby(cat_col)[num_col].mean().to_dict()
+                    self.insights.append({
+                        "columns": [num_col, cat_col],
+                        "type": "anova",
+                        "finding": f"The means of '{num_col}' differ significantly "
+                                   f"across categories of '{cat_col}' "
+                                   f"(F = {f_stat:.2f}, p = {p_value:.4f}). "
+                                   f"This is statistically significant.",
+                        "values": {
+                            "f_statistic": f_stat,
+                            "p_value": p_value,
+                            "category_means": category_means
+                        }
+                    })
+
+        # ── Categorical vs Categorical: Chi-Square Test ───────────────────────
+        # Tests if there's a significant association between two categorical variables.
+        for i in range(len(categorical_cols)):
+            for j in range(i + 1, len(categorical_cols)):
+                col_a = categorical_cols[i]
+                col_b = categorical_cols[j]
+
+                # Create contingency table
+                contingency_table = pd.crosstab(self.df[col_a], self.df[col_b])
+
+                # Need at least 2 rows and 2 columns for Chi-Square
+                if contingency_table.shape[0] < 2 or contingency_table.shape[1] < 2:
+                    continue
+
+                # Ensure expected frequencies are sufficient (all >= 5)
+                # If not, the test may be unreliable
+                if contingency_table.sum().sum() < 20:
+                    continue
+
+                try:
+                    chi2, p_value, dof, expected = stats.chi2_contingency(contingency_table)
+                except:
+                    continue  # Skip if Chi-Square fails
+
+                significant = p_value < 0.05
+
+                if significant:
+                    self.insights.append({
+                        "columns": [col_a, col_b],
+                        "type": "chi_square",
+                        "finding": f"There is a significant association between "
+                                   f"'{col_a}' and '{col_b}' "
+                                   f"(χ² = {chi2:.2f}, p = {p_value:.4f}). "
+                                   f"These variables are not independent.",
+                        "values": {
+                            "chi2_statistic": chi2,
+                            "p_value": p_value,
+                            "degrees_of_freedom": dof
+                        }
+                    })
 
     def _compile_report(self) -> dict:
         """

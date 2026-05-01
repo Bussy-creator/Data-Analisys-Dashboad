@@ -1,0 +1,11 @@
+name,age,salary,department,gender,years_experience
+Alice,28,65000,Engineering,Female,3
+Bob,35,75000,Marketing,Male,7
+Charlie,42,90000,Engineering,Male,12
+Diana,31,68000,Sales,Female,5
+Eve,29,72000,Engineering,Female,4
+Frank,38,85000,Marketing,Male,9
+Grace,45,95000,Engineering,Female,15
+Henry,33,70000,Sales,Male,6
+Iris,27,62000,Marketing,Female,2
+Jack,40,88000,Sales,Male,11
